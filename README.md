@@ -88,14 +88,8 @@ python3 benchmark.py openai-3072
 - h5py (for GloVe benchmark)
 - datasets (for OpenAI benchmark download)
 
-## Citation
+## Reference
 
-```bibtex
-@inproceedings{zandieh2025turboquant,
-  title={TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate},
-  author={Zandieh, Amir and Daliri, Majid and Hadian, Majid and Mirrokni, Vahab},
-  booktitle={International Conference on Learning Representations (ICLR)},
-  year={2026},
-  url={https://arxiv.org/abs/2504.19874}
-}
-```
+This is an unofficial implementation. The original paper:
+
+> Zandieh, A., Daliri, M., Hadian, M., & Mirrokni, V. (2025). *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate*. ICLR 2026. [arXiv:2504.19874](https://arxiv.org/abs/2504.19874)
