@@ -8,6 +8,20 @@
 use rayon::prelude::*;
 use crate::{BLOCK, FLUSH_EVERY};
 
+#[inline]
+fn recompute_heap_min(hs: &[f32], len: usize) -> (f32, usize) {
+    debug_assert!(len > 0);
+    let mut min_idx = 0usize;
+    let mut min_val = hs[0];
+    for i in 1..len {
+        if hs[i] < min_val {
+            min_val = hs[i];
+            min_idx = i;
+        }
+    }
+    (min_val, min_idx)
+}
+
 /// SIMD dot product of two f32 slices (must be same length, multiple of 4).
 #[inline]
 fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
@@ -412,16 +426,21 @@ unsafe fn search_multi_query_avx2(
             let hmi = &mut heap_min_idxs[qi];
 
             if *sz < k {
-                // Filling phase — just insert everything
+                // Fill until the heap is full, then immediately switch to
+                // replacement mode for the rest of the same block.
                 for lane in 0..(end - base_vec) {
-                    hs[*sz] = block_out[lane];
-                    hi[*sz] = (base_vec + lane) as u32;
-                    *sz += 1;
-                    if *sz == k {
-                        *hmin = hs[0]; *hmi = 0;
-                        for h in 1..k {
-                            if hs[h] < *hmin { *hmin = hs[h]; *hmi = h; }
+                    let score = block_out[lane];
+                    if *sz < k {
+                        hs[*sz] = score;
+                        hi[*sz] = (base_vec + lane) as u32;
+                        *sz += 1;
+                        if *sz == k {
+                            (*hmin, *hmi) = recompute_heap_min(hs, k);
                         }
+                    } else if score > *hmin {
+                        hs[*hmi] = score;
+                        hi[*hmi] = (base_vec + lane) as u32;
+                        (*hmin, *hmi) = recompute_heap_min(hs, k);
                     }
                 }
             } else {
@@ -440,24 +459,7 @@ unsafe fn search_multi_query_avx2(
                         if score > *hmin {
                             hs[*hmi] = score;
                             hi[*hmi] = (base_vec + lane) as u32;
-                            // SIMD min-find over k=64 heap entries (8 chunks of 8)
-                            let hp = hs.as_ptr();
-                            let mut vmin = _mm256_loadu_ps(hp);
-                            for c in 1..(k / 8) {
-                                vmin = _mm256_min_ps(vmin, _mm256_loadu_ps(hp.add(c * 8)));
-                            }
-                            // Horizontal min of 8 floats
-                            let lo = _mm256_castps256_ps128(vmin);
-                            let hi128 = _mm256_extractf128_ps(vmin, 1);
-                            let m4 = _mm_min_ps(lo, hi128);
-                            let m2 = _mm_min_ps(m4, _mm_movehl_ps(m4, m4));
-                            let m1 = _mm_min_ps(m2, _mm_shuffle_ps(m2, m2, 1));
-                            *hmin = _mm_cvtss_f32(m1);
-                            // Find index of min (scalar scan, but only after SIMD found the value)
-                            *hmi = 0;
-                            for h in 1..k {
-                                if hs[h] < hs[*hmi] { *hmi = h; }
-                            }
+                            (*hmin, *hmi) = recompute_heap_min(hs, k);
                         }
                     }
                 }

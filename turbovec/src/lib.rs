@@ -192,3 +192,32 @@ impl TurboQuantIndex {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TurboQuantIndex;
+
+    #[test]
+    fn search_handles_small_k_without_heap_overflow() {
+        let dim = 8usize;
+        let n = 32usize;
+        let nq = 8usize;
+        let mut index = TurboQuantIndex::new(dim, 2);
+
+        let vectors: Vec<f32> = (0..(n * dim))
+            .map(|i| ((i % 17) as f32 - 8.0) / 8.0)
+            .collect();
+        let queries: Vec<f32> = (0..(nq * dim))
+            .map(|i| ((i % 11) as f32 - 5.0) / 5.0)
+            .collect();
+
+        index.add(&vectors);
+        let results = index.search(&queries, 8);
+
+        assert_eq!(results.nq, nq);
+        assert_eq!(results.k, 8);
+        assert_eq!(results.scores.len(), nq * 8);
+        assert_eq!(results.indices.len(), nq * 8);
+        assert!(results.indices.iter().all(|&i| i >= 0 && (i as usize) < n));
+    }
+}
