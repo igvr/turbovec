@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use crate::{BLOCK, FLUSH_EVERY};
 
 #[inline]
-fn recompute_heap_min(hs: &[f32], len: usize) -> (f32, usize) {
+fn recompute_heap_min_scalar(hs: &[f32], len: usize) -> (f32, usize) {
     debug_assert!(len > 0);
     let mut min_idx = 0usize;
     let mut min_val = hs[0];
@@ -20,6 +20,60 @@ fn recompute_heap_min(hs: &[f32], len: usize) -> (f32, usize) {
         }
     }
     (min_val, min_idx)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn recompute_heap_min_avx2(hs: &[f32], len: usize) -> (f32, usize) {
+    use std::arch::x86_64::*;
+
+    debug_assert!(len >= 8);
+    let mut i = 0usize;
+    let mut min_v = _mm256_loadu_ps(hs.as_ptr());
+    i += 8;
+
+    while i + 8 <= len {
+        let vals = _mm256_loadu_ps(hs.as_ptr().add(i));
+        min_v = _mm256_min_ps(min_v, vals);
+        i += 8;
+    }
+
+    let mut mins = [0.0f32; 8];
+    _mm256_storeu_ps(mins.as_mut_ptr(), min_v);
+
+    let mut min_val = mins[0];
+    for &v in &mins[1..] {
+        if v < min_val {
+            min_val = v;
+        }
+    }
+
+    while i < len {
+        let v = hs[i];
+        if v < min_val {
+            min_val = v;
+        }
+        i += 1;
+    }
+
+    let mut min_idx = 0usize;
+    for (idx, &v) in hs[..len].iter().enumerate() {
+        if v == min_val {
+            min_idx = idx;
+            break;
+        }
+    }
+    (min_val, min_idx)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn recompute_heap_min_for_avx2(hs: &[f32], len: usize) -> (f32, usize) {
+    if len >= 8 {
+        recompute_heap_min_avx2(hs, len)
+    } else {
+        recompute_heap_min_scalar(hs, len)
+    }
 }
 
 /// SIMD dot product of two f32 slices (must be same length, multiple of 4).
@@ -435,12 +489,12 @@ unsafe fn search_multi_query_avx2(
                         hi[*sz] = (base_vec + lane) as u32;
                         *sz += 1;
                         if *sz == k {
-                            (*hmin, *hmi) = recompute_heap_min(hs, k);
+                            (*hmin, *hmi) = recompute_heap_min_for_avx2(hs, k);
                         }
                     } else if score > *hmin {
                         hs[*hmi] = score;
                         hi[*hmi] = (base_vec + lane) as u32;
-                        (*hmin, *hmi) = recompute_heap_min(hs, k);
+                        (*hmin, *hmi) = recompute_heap_min_for_avx2(hs, k);
                     }
                 }
             } else {
@@ -459,7 +513,7 @@ unsafe fn search_multi_query_avx2(
                         if score > *hmin {
                             hs[*hmi] = score;
                             hi[*hmi] = (base_vec + lane) as u32;
-                            (*hmin, *hmi) = recompute_heap_min(hs, k);
+                            (*hmin, *hmi) = recompute_heap_min_for_avx2(hs, k);
                         }
                     }
                 }
@@ -1021,4 +1075,34 @@ pub fn search(
     }
 
     (all_scores, all_indices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recompute_heap_min_scalar;
+
+    #[cfg(target_arch = "x86_64")]
+    use super::recompute_heap_min_for_avx2;
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_heap_min_matches_scalar() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let hs = [
+            4.0f32, -3.0, 5.5, 7.0, -1.0, 2.0, 8.0, 9.0,
+            1.0, -6.0, 3.0, 10.0, 11.0,
+        ];
+
+        let scalar_small = recompute_heap_min_scalar(&hs, 7);
+        let scalar_large = recompute_heap_min_scalar(&hs, hs.len());
+
+        let avx_small = unsafe { recompute_heap_min_for_avx2(&hs, 7) };
+        let avx_large = unsafe { recompute_heap_min_for_avx2(&hs, hs.len()) };
+
+        assert_eq!(avx_small, scalar_small);
+        assert_eq!(avx_large, scalar_large);
+    }
 }
